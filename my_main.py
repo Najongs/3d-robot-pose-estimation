@@ -136,9 +136,9 @@ def main():
     
     config = {
         'epochs': 50,
-        'batch_size': 64,
+        'batch_size': 54,
         'learning_rate': 2e-4,
-        'num_workers': 16,
+        'num_workers': 24,
         'save_path': "checkpoints_ddp_v2",
         'weight_decay': 0.01,
         'max_grad_norm': 1.0,
