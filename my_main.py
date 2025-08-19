@@ -117,11 +117,12 @@ def train_and_validate(local_rank: int, model: nn.Module, train_dataset: Dataset
                 "epoch": epoch + 1
             })
 
-            # ... (체크포인트 저장 로직은 동일) ...
             if epoch_val_loss < best_val_loss:
                 best_val_loss = epoch_val_loss
-                # ... (모델 저장 코드) ...
-
+                print(f"Validation loss improved to {best_val_loss:.4f}. Saving best model...")
+                # 최고 성능 모델의 '상태'만 저장 (가장 일반적인 방식)
+                torch.save(model.module.state_dict(), os.path.join(config['save_path'], "best_model_checkpoint.pt"))
+                
     if local_rank == 0:
         print("Training finished.")
         ## --- W&B 연동 5: wandb 실행 종료 ---
@@ -137,7 +138,7 @@ def main():
     config = {
         'epochs': 50,
         'batch_size': 54,
-        'learning_rate': 2e-4,
+        'learning_rate': 1.5e-4,
         'num_workers': 24,
         'save_path': "checkpoints_ddp_v2",
         'weight_decay': 0.01,
@@ -165,7 +166,7 @@ def main():
     train_dataset = RobotArmSegFKDataset(index_paths=train_index_files, image_size=IMG_SIZE)
     val_dataset = RobotArmSegFKDataset(index_paths=val_index_files, image_size=IMG_SIZE)
     
-    model = PoseEstimationHRViT(num_kp=7, pretrained=True, img_size=IMG_SIZE).to(local_rank)
+    model = PoseEstimationSwinFPN(num_kp=7, pretrained=True, img_size=IMG_SIZE).to(local_rank)
     model = DDP(model, device_ids=[local_rank])
     
     ## --- W&B 연동 3: wandb.watch로 모델 그래디언트 추적 (메인 프로세스에서만) ---

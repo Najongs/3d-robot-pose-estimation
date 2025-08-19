@@ -249,3 +249,22 @@ def extract_joint_angles_from_row(row: pd.Series) -> Optional[List[float]]:
     if len(nums) >= 6:
         return maybe_to_degrees(nums[:6])
     return None
+
+# =========================================================
+# 3) model helper functions
+# =========================================================
+
+def reshape_vit_output(x, patch_size=16, img_size=512):
+    if x.ndim == 3 and x.shape[1] > 1:
+        if x.shape[1] == (img_size // patch_size)**2 + 1:
+            x = x[:, 1:]
+        B, N, D = x.shape
+        H_feat = W_feat = int(N**0.5)
+        if H_feat * W_feat != N:
+            raise ValueError(f"ViT output sequence length {N} is not a perfect square.")
+        x = x.permute(0, 2, 1).reshape(B, D, H_feat, W_feat)
+    elif x.ndim == 4:
+        pass
+    else:
+        raise ValueError(f"Unsupported ViT output shape for reshaping: {x.shape}")
+    return x
