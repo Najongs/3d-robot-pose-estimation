@@ -6,6 +6,13 @@ __pycache__/
 # C extensions
 *.so
 
+models/
+runs/
+utils/
+wandb/
+checkpoints_ddp_v2/
+
+
 # Distribution / packaging
 .Python
 build/

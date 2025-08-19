@@ -1,0 +1,1 @@
+torchrun --nproc_per_node=3 my_main.py
