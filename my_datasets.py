@@ -30,7 +30,6 @@ class RobotArmSegFKDataset(Dataset):
         
         self.df = pd.concat(rows, ignore_index=True)
         
-        # ROI를 찾지 못한 데이터를 제외합니다.
         self.df.dropna(subset=[self.img_key], inplace=True)
         
         if view_filter is not None:
@@ -38,8 +37,6 @@ class RobotArmSegFKDataset(Dataset):
         
         self.df = self.df.reset_index(drop=True)
 
-        # 이제 모델 로딩 코드가 완전히 사라졌습니다.
-        
         self.transform = A.Compose([
             A.Resize(image_size, image_size),
             A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -79,5 +76,6 @@ class RobotArmSegFKDataset(Dataset):
             "joints_xyz": joints_tensor,
             "img_path": row["img.path"], # 원본 이미지 경로도 필요하면 전달
             "roi_path": img_path,
+            "view": row["img.view"],  # 이미지 뷰 정보도 필요하면 전달
         }
         return sample
