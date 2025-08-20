@@ -110,46 +110,40 @@ class PoseEstimationHRViT(nn.Module):
 # =========================================================
 
 class PoseEstimationSwinFPN(nn.Module):
-    def __init__(self, num_kp=7, backbone_name='swin_base_patch4_window16_512', pretrained=True):
-        """
-        Swin Transformer 백본과 FPN 넥을 사용하는 새로운 포즈 추정 모델
-        'swin_base_patch4_window16_512'는 512x512 이미지로 사전 학습된 모델입니다.
-        """
+    def __init__(self, num_kp=7, img_size=512, backbone_name='swin_base_patch4_window12_384', pretrained=True):
         super().__init__()
         self.num_kp = num_kp
 
-        # 1. Swin Transformer 백본 로드
-        # features_only=True로 설정하여 각 스테이지의 특징 맵을 모두 받아옵니다.
+        # 1. 백본 로드: FPN에 주로 사용되는 3개의 고수준 특징 맵만 사용 (out_indices=(1, 2, 3))
         self.backbone = timm.create_model(
             backbone_name,
             pretrained=pretrained,
             features_only=True,
-            out_indices=(0, 1, 2, 3) # 4개 스테이지의 출력을 모두 사용
+            out_indices=(1, 2, 3), # 더 안정적인 FPN을 위해 3개의 스테이지만 사용
+            img_size=img_size
         )
         
-        # Swin-Base의 각 스테이지 출력 채널 수
-        # (스테이지 0: 128, 1: 256, 2: 512, 3: 1024)
+        # Swin-Base의 각 스테이지 출력 채널 수 (예: [256, 512, 1024])
         backbone_channels = self.backbone.feature_info.channels()
         
-        # FPN 넥에서 사용할 특징 맵의 채널 수
+        # FPN 넥에서 사용할 공통 채널 수
         fpn_channels = 256
 
-        # 2. Feature Pyramid Network (FPN) 넥 정의
-        self.lateral_convs = nn.ModuleList()
-        self.fpn_convs = nn.ModuleList()
+        # 2. FPN 넥 정의 (더 명확한 구조로 수정)
+        self.lateral_convs = nn.ModuleList() # Top-down 경로의 1x1 Conv
+        self.output_convs = nn.ModuleList()  # 최종 출력을 다듬는 3x3 Conv
 
-        # 각 스테이지의 특징 맵을 fpn_channels로 맞춰주는 1x1 Conv (Lateral)
-        for in_channels in backbone_channels:
+        # Backbone의 각 스테이지 출력을 fpn_channels로 맞춰주는 Lateral Conv 생성
+        for in_channels in reversed(backbone_channels):
             self.lateral_convs.append(nn.Conv2d(in_channels, fpn_channels, 1))
-            self.fpn_convs.append(nn.Conv2d(fpn_channels, fpn_channels, 3, padding=1))
+        
+        # 각 FPN 레벨의 출력을 다듬어주는 Output Conv 생성
+        for _ in range(len(backbone_channels)):
+             self.output_convs.append(nn.Conv2d(fpn_channels, fpn_channels, 3, padding=1))
 
-        # 3. 최종 Regression Head 정의
-        # FPN의 최종 출력(고해상도)을 받아 키포인트를 예측합니다.
+        # 3. Regression Head 정의
         self.regression_head = nn.Sequential(
-            nn.Conv2d(fpn_channels, 256, 3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 128, 3, padding=1, bias=False),
+            nn.Conv2d(fpn_channels, 128, 3, padding=1, bias=False),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
             nn.AdaptiveAvgPool2d((1, 1)),
@@ -158,33 +152,37 @@ class PoseEstimationSwinFPN(nn.Module):
         )
 
     def forward(self, x):
-        # 1. 백본을 통해 여러 스케일의 특징 맵 추출
-        features = self.backbone(x) # [feat_s0, feat_s1, feat_s2, feat_s3]
-        
-        # 2. FPN 연산 수행
-        # 2-1. 각 특징 맵의 채널을 fpn_channels로 통일 (Lateral connection)
-        laterals = [
-            lat_conv(features[i])
-            for i, lat_conv in enumerate(self.lateral_convs)
-        ]
-        
-        # 2-2. Top-down 경로: 고수준 특징을 저수준 특징과 결합
-        # 가장 깊은 특징(laterals[3])부터 시작
-        for i in range(len(laterals) - 1, 0, -1):
-            prev_shape = laterals[i-1].shape[2:]
-            # 이전 스테이지 특징 맵을 현재 스테이지 크기로 업샘플링하고 더해줌
-            laterals[i-1] += F.interpolate(laterals[i], size=prev_shape, mode='nearest')
-        
-        # 2-3. 최종 특징 맵 생성 (3x3 Conv로 다듬어주기)
-        fpn_outputs = [
-            self.fpn_convs[i](laterals[i])
-            for i in range(len(laterals))
-        ]
-        
-        # 가장 해상도가 높은 fpn_outputs[0]를 헤드에 전달 (더 많은 스케일 사용도 가능)
-        final_features = fpn_outputs[0]
+        # 1. 백본에서 특징 맵 추출
+        features = self.backbone(x)
 
-        # 3. Regression Head를 통해 최종 3D 좌표 예측
-        output = self.regression_head(final_features)
+        # --- !! 해결책: 메모리 형식을 Channels-First (B, C, H, W)로 변환 !! ---
+        # 백본 출력이 channels-last 형식일 수 있으므로, permute로 순서를 바꿔줍니다.
+        features = [f.permute(0, 3, 1, 2) for f in features]
+        # --------------------------------------------------------------------
+
+        features = list(reversed(features)) # 깊은 것부터 처리하기 위해 순서 뒤집기
+
+        # 2. FPN Top-down 경로 연산
+        lateral_outputs = []
+        prev_feature = None
+
+        for i, feature in enumerate(features):
+            current_feature = self.lateral_convs[i](feature)
+            if prev_feature is not None:
+                current_feature += F.interpolate(prev_feature, size=current_feature.shape[2:], mode='nearest')
+            
+            lateral_outputs.append(current_feature)
+            prev_feature = current_feature
+        
+        # 3. FPN Output Conv 연산
+        fpn_outputs = [
+            self.output_convs[i](feature)
+            for i, feature in enumerate(reversed(lateral_outputs))
+        ]
+        
+        final_feature = fpn_outputs[0]
+
+        # 4. Regression Head로 최종 3D 좌표 예측
+        output = self.regression_head(final_feature)
         
         return output.view(-1, self.num_kp, 3)

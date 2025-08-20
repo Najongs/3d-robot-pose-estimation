@@ -16,7 +16,7 @@ from torch.cuda.amp import GradScaler, autocast
 import wandb
 
 from my_datasets import RobotArmSegFKDataset
-from my_models import PoseEstimationHRViT
+from my_models import PoseEstimationHRViT, PoseEstimationSwinFPN
 
 # ... (setup_ddp, cleanup_ddp 함수 및 기타 설정은 모두 동일) ...
 os.environ['MKL_THREADING_LAYER'] = 'GNU'
@@ -137,8 +137,8 @@ def main():
     
     config = {
         'epochs': 50,
-        'batch_size': 54,
-        'learning_rate': 1.5e-4,
+        'batch_size': 16, # 기존 ViT batch Size 56, swin batch Size(ViT 384) 16
+        'learning_rate': 1e-4,
         'num_workers': 24,
         'save_path': "checkpoints_ddp_v2",
         'weight_decay': 0.01,
@@ -167,7 +167,7 @@ def main():
     val_dataset = RobotArmSegFKDataset(index_paths=val_index_files, image_size=IMG_SIZE)
     
     model = PoseEstimationSwinFPN(num_kp=7, pretrained=True, img_size=IMG_SIZE).to(local_rank)
-    model = DDP(model, device_ids=[local_rank])
+    model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
     
     ## --- W&B 연동 3: wandb.watch로 모델 그래디언트 추적 (메인 프로세스에서만) ---
     if local_rank == 0:
