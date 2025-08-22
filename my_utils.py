@@ -7,7 +7,8 @@ import pandas as pd
 from typing import Any, Dict, List, Optional, Tuple
 from bisect import bisect_left
 import numpy as np
-
+import cv2
+import configparser
 
 # =========================================================
 # 1) 데이터 준비: 이미지-조인트 매칭 및 인덱싱
@@ -223,6 +224,62 @@ def angle_to_joint_coordinate(joint_angles_deg: List[float]) -> np.ndarray:
     joints_xyz = np.stack(joints_xyz, axis=0)
     return joints_xyz
 
+### ⚙️ 카메라 파라미터 로딩 함수
+def load_all_intrinsics(conf_folder_path: str):
+    all_intrinsics = {}
+    try:
+        conf_files = [f for f in os.listdir(conf_folder_path) if f.endswith('.conf')]
+        for filename in conf_files:
+            serial = os.path.splitext(filename)[0]
+            all_intrinsics[serial] = {}
+            parser = configparser.ConfigParser()
+            parser.read(os.path.join(conf_folder_path, filename))
+            for side in ['left', 'right']:
+                sec = f'{side.upper()}_CAM_2K'
+                if parser.has_section(sec):
+                    p = parser[sec]
+                    K = np.array([[float(p['fx']),0,float(p['cx'])],[0,float(p['fy']),float(p['cy'])],[0,0,1]],dtype=np.float32)
+                    D = np.array([float(p['k1']),float(p['k2']),float(p['p1']),float(p['p2']),float(p.get('k3',0.0))],dtype=np.float32)
+                    all_intrinsics[serial][side] = {"K": K, "D": D}
+        print("✅ Intrinsics loaded.")
+        return all_intrinsics
+    except FileNotFoundError:
+        print(f"⛔ Error: Intrinsics directory not found at '{conf_folder_path}'")
+        return {}
+
+def load_all_extrinsics(json_path: str):
+    try:
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        all_extrinsics = {}
+        for entry in data:
+            view, cam = entry.get("view"), entry.get("cam")
+            if not (view and cam): continue
+            if view not in all_extrinsics: all_extrinsics[view] = {}
+            rvec = np.array([entry['rvec_x'], entry['rvec_y'], entry['rvec_z']], dtype=np.float32)
+            tvec = np.array([entry['tvec_x'], entry['tvec_y'], entry['tvec_z']], dtype=np.float32)
+            all_extrinsics[view][cam] = {"rvec": rvec, "tvec": tvec}
+        print("✅ Extrinsics loaded.")
+        return all_extrinsics
+    except FileNotFoundError:
+        print(f"⛔ Error: Extrinsics file not found at '{json_path}'")
+        return {}
+
+def transform_robot_to_camera_coords(
+    joints_xyz: np.ndarray,
+    cam_params: Dict[str, np.ndarray]
+) -> np.ndarray:
+    # 1. 회전 벡터(rvec)를 3x3 회전 행렬(R)로 변환합니다.
+    rotation_matrix, _ = cv2.Rodrigues(cam_params['rvec'])
+
+    # 2. 로봇 좌표에 회전 행렬을 적용하고 이동 벡터를 더합니다.
+    # P_cam = R * P_robot + t
+    # (R @ joints_xyz.T) -> (3x3) @ (3xN) = (3xN)
+    # .T -> (Nx3)
+    joints_camera_xyz = (rotation_matrix @ joints_xyz.T).T + cam_params['tvec'].T
+
+    return joints_camera_xyz
+
 def maybe_to_degrees(joint_angles: List[float]) -> List[float]:
     if all(abs(a) <= math.pi * 1.25 for a in joint_angles):
         return [math.degrees(a) for a in joint_angles]
@@ -249,6 +306,29 @@ def extract_joint_angles_from_row(row: pd.Series) -> Optional[List[float]]:
     if len(nums) >= 6:
         return maybe_to_degrees(nums[:6])
     return None
+
+def get_camera_parameters(filename: str, intrinsics: dict, extrinsics: dict, serial_map: dict) -> dict | None:
+    fn_lower = filename.lower()
+
+    # 1. 정보 파싱
+    found_view = next((view for view, serial in serial_map.items() if serial in fn_lower), None)
+    found_serial_key = next((s_key for s_key in intrinsics if s_key.replace('SN', '') in fn_lower), None)
+    side = 'left' if '_left_' in fn_lower else 'right' if '_right_' in fn_lower else None
+    cam_name = 'leftcam' if '_left_' in fn_lower else 'rightcam' if '_right_' in fn_lower else None
+
+    # 3. 모든 정보 확인
+    if not all([found_view, found_serial_key, side, cam_name]):
+        print("  - ❌ 조회 실패: 파일명에서 필요한 모든 정보를 찾지 못했습니다.")
+        return None
+
+    # 4. 최종 조회 및 결과 출력
+    try:
+        intr = intrinsics[found_serial_key][side]
+        extr = extrinsics[found_view][cam_name]
+        return {**intr, **extr}
+    except KeyError as e:
+        print(f"  - ❌ 조회 실패: 딕셔너리에서 키 '{e}'를 찾을 수 없습니다.")
+        return None
 
 # =========================================================
 # 3) model helper functions
