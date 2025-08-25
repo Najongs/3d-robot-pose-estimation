@@ -329,7 +329,33 @@ def get_camera_parameters(filename: str, intrinsics: dict, extrinsics: dict, ser
     except KeyError as e:
         print(f"  - ❌ 조회 실패: 딕셔너리에서 키 '{e}'를 찾을 수 없습니다.")
         return None
+    
+# --- ✨ 2D 투영을 위한 헬퍼 함수 추가 ✨ ---
+def draw_projected_skeleton(image, points_3d, K, D, roi_offset, color, connections):
+    """3D 포인트를 2D 이미지에 투영하고 스켈레톤을 그립니다."""
+    if points_3d.size == 0:
+        return image
+        
+    # 3D 포인트가 이미 카메라 좌표계에 있으므로 rvec, tvec는 0으로 설정
+    rvec = np.zeros(3, dtype=np.float32)
+    tvec = np.zeros(3, dtype=np.float32)
+    
+    # 3D 포인트를 2D 이미지 평면에 투영
+    points_2d, _ = cv2.projectPoints(points_3d, rvec, tvec, K, D)
+    points_2d = points_2d.reshape(-1, 2)
+    
+    # ROI 좌표계에 맞게 오프셋 조정
+    points_2d_roi = (points_2d - roi_offset).astype(int)
 
+    # 관절(점) 그리기
+    for pt in points_2d_roi:
+        cv2.circle(image, tuple(pt), radius=8, color=color, thickness=-1, lineType=cv2.LINE_AA)
+    
+    # 뼈대(선) 그리기
+    for start_idx, end_idx in connections:
+        cv2.line(image, tuple(points_2d_roi[start_idx]), tuple(points_2d_roi[end_idx]), color, thickness=3, lineType=cv2.LINE_AA)
+        
+    return image
 # =========================================================
 # 3) model helper functions
 # =========================================================

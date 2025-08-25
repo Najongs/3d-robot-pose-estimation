@@ -79,9 +79,19 @@ class RobotArmPoseDataset(Dataset):
 
         joints_camera_xyz = transform_robot_to_camera_coords(joints_robot_xyz, cam_params)
         joints_tensor = torch.from_numpy(joints_camera_xyz).float()
-
+        
+        try:
+            roi_offset = np.array([row['roi.x'], row['roi.y']], dtype=np.float32)
+        except KeyError:
+            # roi.x, roi.y가 없을 경우 roi.x1, roi.y1을 사용
+            roi_offset = np.array([row['roi.x1'], row['roi.y1']], dtype=np.float32)
+            
         return {
             "image": img_tensor,
             "joints_camera_xyz": joints_tensor,
             "img_path": row["img.path"],
+            "roi_path": roi_path,
+            "K": cam_params['K'],
+            "D": cam_params['D'],
+            "roi_offset": roi_offset,
         }
